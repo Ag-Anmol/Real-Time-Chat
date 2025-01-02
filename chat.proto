@@ -1,9 +1,0 @@
-syntax = "proto3";
-
-// Define the structure of a chat message
-message ChatMessage {
-  string sender = 1;       // Sender's username
-  string recipient = 2;    // Recipient's username
-  string message = 3;      // Message content
-  int64 timestamp = 4;     // Timestamp of the message (Unix time)
-}
