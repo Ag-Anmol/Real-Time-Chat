@@ -1,62 +1,81 @@
-from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit
-import eventlet
-eventlet.monkey_patch()  # Monkey patching for WebSocket support
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
-# Create Flask app and SocketIO instance
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins for now
+socketio = SocketIO(app)
 
-# Store users and their socket IDs
-users = {}
+rooms_messages = {}
+users_in_rooms = {}
 
 @app.route('/')
 def index():
-    return render_template('index.html')  # Render the frontend page
+    return render_template('index.html')
 
-# Handle WebSocket connection
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected:', request.sid)
-
-# Handle user joining the chat
+# Handle user joining a room
 @socketio.on('join')
-def handle_join(username):
-    if username:
-        users[request.sid] = username
-        print(f'{username} has joined the chat')
-        emit('message', {'sender': 'Server', 'message': f"{username} has joined the chat!"}, broadcast=True)
+def handle_join(data):
+    username = data['username']
+    room = data['room']
+    
+    # Join the room
+    join_room(room)
+    
+    # Keep track of users in rooms
+    if room not in users_in_rooms:
+        users_in_rooms[room] = []
+    if username not in users_in_rooms[room]:
+        users_in_rooms[room].append(username)
 
-# Handle sending a message (group chat - no recipient needed)
+    # Emit the user list to the room
+    emit('user_list', users_in_rooms[room], room=room)
+    
+    # Emit previously sent messages of the room
+    if room in rooms_messages:
+        for message in rooms_messages[room]:
+            emit('receive_message', {'sender': message[0], 'message': message[1], 'room': room}, room=room)
+
+# Handle sending a message
 @socketio.on('send_message')
-def handle_send_message(message_data):
-    try:
-        sender = message_data.get('sender')
-        message = message_data.get('message')
-
-        if not sender or not message:
-            raise ValueError("Sender and message must be provided.")
-
-        print(f"Received message from {sender}: {message}")
+def handle_message(data):
+    sender = data['sender']
+    message = data['message']
+    room = data['room']
+    
+    if sender and message:  # Check that sender and message are not empty
+        # Store message for the room
+        if room not in rooms_messages:
+            rooms_messages[room] = []
+        rooms_messages[room].append((sender, message))
         
-        # Broadcast the message to all users in the group (no recipient needed)
-        emit('receive_message', message_data, broadcast=True)
+        # Broadcast the message to the room
+        emit('receive_message', {'sender': sender, 'message': message, 'room': room}, room=room)
+    else:
+        print("Error: Message or sender is undefined.")
 
-    except ValueError as ve:
-        print(f"ValueError: {ve}")
-        emit('error', {'message': str(ve)})
-    except Exception as e:
-        print(f"Error during message handling: {e}")
-        emit('error', {'message': 'Error sending message'})
+# Get list of recently visited rooms for a user
+@socketio.on('get_recent_rooms')
+def handle_get_recent_rooms(username):
+    # Here we can use some storage to keep track of rooms the user has visited
+    recent_rooms = []
+    for room, users in users_in_rooms.items():
+        if username in users:
+            recent_rooms.append(room)
+    emit('recent_rooms', recent_rooms)
 
-# Handle user disconnecting
+# Get messages of a specific room
+@socketio.on('get_messages')
+def handle_get_messages(data):
+    room = data['room']
+    messages = rooms_messages.get(room, [])
+    emit('receive_message', {'messages': messages, 'room': room})
+
+# Handle user disconnecting from the room
 @socketio.on('disconnect')
 def handle_disconnect():
-    username = users.pop(request.sid, None)
-    if username:
-        print(f'{username} has left the chat')
-        emit('message', {'sender': 'Server', 'message': f"{username} has left the chat."}, broadcast=True)
+    for room, users in users_in_rooms.items():
+        if username in users:
+            users.remove(username)
+            emit('user_list', users, room=room)
 
-# Run the Flask app with SocketIO support
 if __name__ == '__main__':
     socketio.run(app, debug=True)

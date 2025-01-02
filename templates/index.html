@@ -3,15 +3,64 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Group Chat</title>
+    <title>Real-Time Chat</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <style>
+        /* Styling for the Send button */
+        .send-button {
+            padding: 10px 20px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s ease;
+        }
+
+        .send-button:hover {
+            background-color: #0056b3;
+        }
+
+        .send-button:disabled {
+            background-color: #d6d6d6;
+            cursor: not-allowed;
+        }
+
+        /* Message input and send button container */
+        .message-input-container {
+            display: flex;
+            margin-top: 10px;
+        }
+
+        .message-input-container input {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .message-input-container button {
+            margin-left: 10px;
+        }
+    </style>
 </head>
 <body>
     <div id="login-form">
         <h1>Welcome to Real-Time Chat</h1>
         <label for="username">Enter your username:</label>
         <input type="text" id="username" placeholder="Your name" required>
-        <button onclick="joinChat()">Join Chat</button>
+        <button onclick="joinChat()">Enter Chat</button>
+    </div>
+
+    <div id="room-selection" style="display: none;">
+        <h3>Welcome, <span id="user-name"></span>!</h3>
+        <h4>Recently Visited Rooms:</h4>
+        <ul id="room-list"></ul>
+        <input type="text" id="new-room" placeholder="New Room Name">
+        <button onclick="createNewRoom()">Create or Join New Room</button>
+        <button onclick="goBackToLogin()">Go Back</button> <!-- Go back button -->
     </div>
 
     <div id="chat-window" style="display: none;">
@@ -21,40 +70,86 @@
         </div>
         <div id="messages" class="messages-container"></div>
         <div class="message-input-container">
-            <input type="text" id="message-input" placeholder="Type your message..." />
-            <button onclick="sendMessage()">Send</button>
+            <input type="text" id="message-input" placeholder="Type your message..." oninput="toggleSendButton()" />
+            <button class="send-button" onclick="sendMessage()" id="send-button" disabled>Send</button>
         </div>
+        <button onclick="goBackToRoomSelection()">Go Back to Room Selection</button> <!-- Go back button -->
     </div>
 
     <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
     <script>
         const socket = io();
         let username = '';
-        
-        // Show the login form and allow the user to join the chat
+        let currentRoom = '';  // Store current room
+
+        // Show the login form and allow the user to join the chat room
         function joinChat() {
             username = document.getElementById('username').value.trim();
             if (username) {
-                // Emit join event when the user enters a valid name
-                socket.emit('join', username);
+                // Emit join event with username
+                socket.emit('join', { username: username, room: 'General' });
 
-                // Hide login form and show the chat window
+                // Hide login form and show the room selection screen
                 document.getElementById('login-form').style.display = 'none';
-                document.getElementById('chat-window').style.display = 'block';
+                document.getElementById('room-selection').style.display = 'block';
+
+                // Display the username and recently visited rooms
+                document.getElementById('user-name').innerText = username;
+                updateRoomList();
             } else {
                 alert("Please enter a valid username.");
             }
         }
 
-        // Listen for incoming messages and display them in the chat
-        socket.on('message', function(data) {
-            const messageDiv = createMessageElement(data.sender, data.message);
-            document.getElementById('messages').appendChild(messageDiv);
-        });
+        // Update the list of recently visited rooms
+        function updateRoomList() {
+            socket.emit('get_recent_rooms', username);
+            socket.on('recent_rooms', function(rooms) {
+                const roomList = document.getElementById('room-list');
+                roomList.innerHTML = '';
+                rooms.forEach(room => {
+                    const li = document.createElement('li');
+                    li.textContent = room;
+                    li.onclick = function() { joinRoom(room); };
+                    roomList.appendChild(li);
+                });
+            });
+        }
 
+        // Join an existing room
+        function joinRoom(room) {
+            socket.emit('join', { username: username, room: room });
+            currentRoom = room;  // Update current room
+            showChatWindow(room);
+        }
+
+        // Create or join a new room
+        function createNewRoom() {
+            const newRoom = document.getElementById('new-room').value.trim();
+            if (newRoom) {
+                socket.emit('join', { username: username, room: newRoom });
+                currentRoom = newRoom;  // Update current room
+                showChatWindow(newRoom);
+            } else {
+                alert("Please enter a room name.");
+            }
+        }
+
+        // Show chat window after joining a room
+        function showChatWindow(room) {
+            room = room || 'General';
+            document.getElementById('room-selection').style.display = 'none';
+            document.getElementById('chat-window').style.display = 'block';
+            document.getElementById('messages').innerHTML = '';  // Clear previous messages
+            socket.emit('get_messages', { room: room }); // Request room-specific messages
+        }
+
+        // Listen for incoming messages and display them in the chat
         socket.on('receive_message', function(data) {
-            const messageDiv = createMessageElement(data.sender, data.message);
-            document.getElementById('messages').appendChild(messageDiv);
+            if (data.room === currentRoom) {
+                const messageDiv = createMessageElement(data.sender, data.message);
+                document.getElementById('messages').appendChild(messageDiv);
+            }
         });
 
         // Listen for user list updates and update the active users list
@@ -80,12 +175,32 @@
         function sendMessage() {
             const messageInput = document.getElementById('message-input');
             const message = messageInput.value.trim();
-            
+
             if (message) {
-                // Emit the message to all users in the group
-                socket.emit('send_message', { sender: username, message: message });
+                socket.emit('send_message', { sender: username, message: message, room: currentRoom });
                 messageInput.value = '';  // Clear the input field after sending
+                toggleSendButton(); // Disable button again after sending
             }
+        }
+
+        // Toggle the send button based on input field content
+        function toggleSendButton() {
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.getElementById('send-button');
+            sendButton.disabled = !messageInput.value.trim(); // Enable button if message is entered
+        }
+
+        // Go back to the login page
+        function goBackToLogin() {
+            document.getElementById('room-selection').style.display = 'none';
+            document.getElementById('login-form').style.display = 'block';
+        }
+
+        // Go back to the room selection page, keeping track of the current room
+        function goBackToRoomSelection() {
+            document.getElementById('chat-window').style.display = 'none';
+            document.getElementById('room-selection').style.display = 'block';
+            updateRoomList();  // Update the room list on return
         }
     </script>
 </body>
